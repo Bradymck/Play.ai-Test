@@ -27,6 +27,11 @@ const PlayAIComponent = () => {
 
     ws.onmessage = (event) => {
       const message = JSON.parse(event.data);
+      console.log('Received message:', message);
+      if (message.type === 'audioStream') {
+        console.log('Received audio data:', message.data.substring(0, 50) + '...');
+        playAudioData(message.data);
+      }
       setMessages(prevMessages => [...prevMessages, message]);
     };
 
@@ -67,6 +72,20 @@ const PlayAIComponent = () => {
         wsRef.current.close();
       }
     }
+  };
+
+  const playAudioData = (base64Data) => {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createBufferSource();
+    const arrayBuffer = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0)).buffer;
+    
+    audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+      source.start(0);
+    }, (error) => {
+      console.error('Error decoding audio data:', error);
+    });
   };
 
   return (
