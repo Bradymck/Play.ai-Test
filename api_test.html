@@ -1,0 +1,252 @@
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { playAudio, stopCurrentAudio, clearAudioQueue } from '../utils/audioProcessor';
+import { Howl, Howler } from 'howler';
+
+const CONNECTION_STATES = {
+  DISCONNECTED: 'disconnected',
+  CONNECTING: 'connecting',
+  CONNECTED: 'connected',
+  ERROR: 'error',
+};
+
+...
+const VoiceInput = ({ onAudioReceived, onPermissionGranted, connectButtonRef }) => {
+  const [connectionState, setConnectionState] = useState(CONNECTION_STATES.DISCONNECTED);
+  const [isLoading, setIsLoading] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const wsRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !window.audioContext) {
+      window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      console.log('AudioContext initialized');
+    }
+
+    return () => {
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stop();
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      stopCurrentAudio();
+    };
+  }, []);
+
+  const handleErrorMessage = useCallback((code, message) => {
+    switch (code) {
+      case 1001:
+        console.error('Invalid authorization token');
+        break;
+      case 1002:
+        console.error('Invalid agent ID');
+        break;
+      case 1003:
+        console.error('Invalid authorization credentials');
+        break;
+      case 1005:
+        console.error('Not enough credits');
+        break;
+      case 4400:
+        console.error('Invalid parameters');
+        break;
+      case 4401:
+        console.error('Unauthorized');
+        break;
+      case 4429:
+        console.error('Maximum concurrent connections reached');
+        break;
+      case 4500:
+        console.error('Internal server error');
+        break;
+      default:
+        console.error('Unknown error');
+    }
+    setConnectionState(CONNECTION_STATES.ERROR);
+  }, []);
+...
+  const handleWebSocketMessage = useCallback((event) => {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch (error) {
+      console.error('Error parsing WebSocket message:', error);
+      return;
+    }
+
+    console.log('Received message type:', message.type);
+
+    switch (message.type) {
+      case 'audioStream':
+        if (message.data && typeof message.data === 'string') {
+          console.log('Received audio data, length:', message.data.length);
+          playAudio(message.data)
+            .then(() => {
+              console.log('Audio playback completed successfully');
+            })
+            .catch((error) => {
+              console.error('Error during audio playback:', error);
+            });
+          onAudioReceived(message.data);
+        } else {
+          console.error('Invalid audio data received:', message);
+        }
+        break;
+      case 'voiceActivityStart':
+        console.log('Voice activity started');
+        stopCurrentAudio();
+        break;
+      case 'voiceActivityEnd':
+        console.log('Voice activity ended');
+        break;
+      case 'newAudioStream':
+        console.log('New audio stream started');
+        clearAudioQueue();
+        break;
+      case 'onAgentTranscript':
+        console.log('Agent transcript:', message.message);
+        break;
+      case 'error':
+        console.error('Error from server:', message.code, message.message);
+        handleErrorMessage(message.code, message.message);
+        break;
+      default:
+        console.warn('Received unknown message type:', message.type);
+    }
+...
+  }, [onAudioReceived, handleErrorMessage]);
+    wsRef.current = ws;
+  const setupWebSocket = useCallback(() => {
+    const ws = new WebSocket(`wss://api.play.ai/v1/talk/${process.env.REACT_APP_PLAY_AI_AGENT_ID}`);
+    wsRef.current = ws;
+      setConnectionState(CONNECTION_STATES.CONNECTED);
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+      setConnectionState(CONNECTION_STATES.CONNECTED);
+      if (process.env.REACT_APP_PLAY_AI_API_KEY) {
+        ws.send(JSON.stringify({
+          type: 'setup',
+          apiKey: process.env.REACT_APP_PLAY_AI_API_KEY,
+          outputFormat: 'wav',
+          outputSampleRate: 16000,
+          inputEncoding: 'media-container'
+        }));
+      } else {
+        console.error('API key is missing. Please check your environment variables.');
+        setConnectionState(CONNECTION_STATES.ERROR);
+        ws.close();
+      }
+    };
+      console.log('WebSocket disconnected:', event.code, event.reason);
+    ws.onmessage = handleWebSocketMessage;
+    ws.onclose = (event) => {
+      console.log('WebSocket disconnected:', event.code, event.reason);
+      setConnectionState(CONNECTION_STATES.DISCONNECTED);
+    };
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setConnectionState(CONNECTION_STATES.ERROR);
+    };
+  }, [handleWebSocketMessage]);
+      try {
+  const handleDataAvailable = useCallback(async (event) => {
+    if (event.data.size > 0 && wsRef.current) {
+      try {
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          const base64Data = await blobToBase64(event.data);
+          console.log('Sending audio data, length:', base64Data.length);
+          wsRef.current.send(JSON.stringify({
+            type: 'audioIn',
+            data: base64Data
+          }));
+        } else {
+          console.warn('WebSocket is not in OPEN state. Current state:', wsRef.current.readyState);
+        }
+      } catch (error) {
+        console.error('Error processing audio data:', error);
+      }
+    }
+  }, []);
+...
+  const setupMediaRecorder = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          autoGainControl: true,
+          noiseSuppression: true,
+        }
+      });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      onPermissionGranted();
+      mediaRecorder.ondataavailable = handleDataAvailable;
+      mediaRecorder.start(1000);
+      onPermissionGranted();
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+      setConnectionState(CONNECTION_STATES.ERROR);
+    }
+  }, [handleDataAvailable, onPermissionGranted]);
+      setIsLoading(true);
+  const startConnection = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      setConnectionState(CONNECTION_STATES.CONNECTING);
+      await setupMediaRecorder();
+      setupWebSocket();
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Error starting connection:', error);
+      setConnectionState(CONNECTION_STATES.ERROR);
+      setIsLoading(false);
+    }
+  }, [setupWebSocket, setupMediaRecorder]);
+      mediaRecorderRef.current.stop();
+  const stopConnection = useCallback(() => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    stopCurrentAudio();
+    setConnectionState(CONNECTION_STATES.DISCONNECTED);
+  }, []);
+...
+  const toggleAudioConnection = useCallback(() => {
+    if (connectionState === CONNECTION_STATES.CONNECTED) {
+      stopConnection();
+    } else if (connectionState === CONNECTION_STATES.DISCONNECTED) {
+      startConnection();
+    }
+    playTestSound();
+  }, [connectionState, startConnection, stopConnection]);
+    const testSound = new Howl({
+  const playTestSound = () => {
+    console.log('Attempting to play test sound');
+    const testSound = new Howl({
+      src: ['/assets/click.wav'],
+      html5: true,
+      onload: () => console.log('Test sound loaded successfully'),
+      onplay: () => console.log('Test sound started playing'),
+      onend: () => console.log('Test sound finished playing'),
+      onloaderror: (id, error) => console.error('Error loading test sound:', error),
+      onplayerror: (id, error) => console.error('Error playing test sound:', error),
+    });
+    testSound.play();
+  };
+      <button ref={connectButtonRef} onClick={toggleAudioConnection} disabled={connectionState === CONNECTION_STATES.CONNECTING || isLoading}>
+  return (
+    <div>
+      <button ref={connectButtonRef} onClick={toggleAudioConnection} disabled={connectionState === CONNECTION_STATES.CONNECTING || isLoading}>
+        {connectionState === CONNECTION_STATES.CONNECTED ? '📞  Stop Conversation' : isLoading ? '📞 Connecting...' : '📞 Start Conversation'}
+      </button>
+      <p>Connection status: {connectionState}</p>
+    </div>
+  );
+
+
+  REACT_APP_PLAY_AI_AGENT_ID=ARI-LOLO-BwU299Z2hjz7Sh6RPsv6G
+REACT_APP_PLAY_AI_API_KEY=ak-418753ffb85e456bb2287915d27c1655
